@@ -83,7 +83,57 @@ hover_find_declaration :: (node: *Node) -> *Declaration {
         return null;
     }
 
-    return decls[0];
+    return hover_pick_declaration(decls, ident.location);
+}
+
+// Declarations are collected globals first and then from the nearest scope outwards. Picking the one
+// from the deepest scope (and declared before the cursor) makes a shadowing local win over a global
+// and keeps both branches of a compile-time `#if` equivalent.
+hover_pick_declaration :: (decls: []*Declaration, location: Node.Location) -> *Declaration {
+    best: *Declaration;
+    best_depth: int;
+
+    for decl: decls {
+        if !decl continue;
+
+        if decl.location.l0 > location.l0 continue;
+        if decl.location.l0 == location.l0 && decl.location.c0 > location.c0 continue;
+
+        depth := hover_scope_depth(decl);
+        if !best || depth > best_depth {
+            best = decl;
+            best_depth = depth;
+        }
+    }
+
+    if best return best;
+
+    // Everything is declared after the cursor (forward references), take the first match.
+    for decl: decls {
+        if decl return decl;
+    }
+
+    return null;
+}
+
+hover_scope_depth :: (decl: *Declaration) -> int {
+    depth: int;
+    node := cast(*Node) decl;
+
+    while node {
+        if node.kind == {
+            case .BLOCK; #through;
+            case .PROCEDURE; #through;
+            case .STRUCT; #through;
+            case .UNION; #through;
+            case .ENUM;
+                depth += 1;
+        }
+
+        node = node.parent;
+    }
+
+    return depth;
 }
 
 // Is the identifier the right side of a `object.member` (or `object.method()`) expression?

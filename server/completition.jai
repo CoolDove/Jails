@@ -373,8 +373,7 @@ handle_completitions_for_node :: (request: LSP_Request_Message_Completion, node:
         case .DIRECTIVE_IMPORT;
             import := cast(*Directive_Import) node;
 
-            module_file_path := get_module_import_path(import, node.location.file);
-            module_file := get_file(module_file_path);
+            module_file := get_module_file(import);
 
             if !module_file {
                 return false;
