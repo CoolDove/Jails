@@ -79,7 +79,7 @@ LSP_Log_Message :: struct {
     };
 }
 
-LSP_Window_Show_Message_Type :: enum {
+LSP_Window_Show_Message_Type :: enum s32 {
     ERROR :: 1;
     WARNING :: 2;
     INFO :: 3;
@@ -91,7 +91,7 @@ LSP_Window_Show_Message :: struct {
     using request: LSP_Request_Message;
     method = "window/showMessage";
     params: struct{
-        type: LSP_Window_Show_Message_Type;
+        type: s32; // *LSP_Window_Show_Message_Type; jaison serializes enums as names, but LSP wants a number.
         message: string;
     }
 }
@@ -746,11 +746,11 @@ lsp_log :: (message : string, data : *void, info : Log_Info) {
     lsp_send(sent_log);
 }
 
-lsp_window_message :: (format: string, args: ..Any, type: LSP_Window_Show_Message_Type = .INFO) {
+lsp_window_message :: (format: string, args: ..Any, message_type: LSP_Window_Show_Message_Type = .INFO) {
     content := sprint(format, ..args);
     message: LSP_Window_Show_Message;
     message.params.message = content;
-    message.params.type = type;
+    message.params.type = cast(s32) message_type;
     lsp_send(message);
     free(content);
 }

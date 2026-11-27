@@ -318,29 +318,149 @@ load_config_file :: () {
     }
 }
 
-create_diagnostics_metaprogram :: () {
+// User cache directory that holds everything Jails generates at runtime. The Jails installation
+// directory is often read-only (Program Files, extension folders, package manager shims), so nothing
+// is written next to the executable. Set JAILS_CACHE_DIR to override.
+jails_cache_directory :: () -> string {
+    override := environment_variable("JAILS_CACHE_DIR");
+    if override.count > 0 {
+        directory := copy_string(override); // Copy: the environment block is not ours to modify.
+        path_overwrite_separators(directory, #char "/");
+        return directory;
+    }
+
+    #if OS == .WINDOWS {
+        local_app_data := environment_variable("LOCALAPPDATA");
+        if local_app_data.count > 0 {
+            directory := join(local_app_data, "jails", separator="/");
+            path_overwrite_separators(directory, #char "/");
+            return directory;
+        }
+    }
+
+    #if OS == .MACOS {
+        home := environment_variable("HOME");
+        if home.count > 0 {
+            directory := join(home, "Library", "Caches", "jails", separator="/");
+            path_overwrite_separators(directory, #char "/");
+            return directory;
+        }
+    }
+
+    #if OS != .WINDOWS && OS != .MACOS {
+        xdg_cache_home := environment_variable("XDG_CACHE_HOME");
+        if xdg_cache_home.count > 0 {
+            directory := join(xdg_cache_home, "jails", separator="/");
+            path_overwrite_separators(directory, #char "/");
+            return directory;
+        }
+
+        home := environment_variable("HOME");
+        if home.count > 0 {
+            directory := join(home, ".cache", "jails", separator="/");
+            path_overwrite_separators(directory, #char "/");
+            return directory;
+        }
+    }
+
+    // No usable user cache directory: stay relative to the working directory rather than failing.
+    return join(get_working_directory(), ".jails-cache", separator="/");
+}
+
+environment_variable :: (name: string) -> string {
+    #if OS == .WINDOWS {
+        // getenv() goes through the ANSI code page, which mangles paths with non-ASCII user names.
+        wide_name, _, _ := utf8_to_wide(name);
+        value_wide := _wgetenv(cast(*s16) wide_name);
+        free(wide_name);
+
+        if value_wide == null return "";
+
+        value, success := wide_to_utf8(cast(*u16) value_wide);
+        return ifx success then value else "";
+    } else {
+        value := getenv(temp_c_string(name));
+        if value == null return "";
+        return to_string(value);
+    }
+}
+
+// Directory name for a project: a readable prefix plus the hash of the full project path, so that
+// different projects never share (and overwrite) the same generated files. Deliberately not keyed by
+// the Jails version: an upgrade reuses the same folder, and the content check below refreshes it.
+metaprogram_cache_key :: (project_root: string) -> string {
+    name_buffer: [..]u8;
+    defer array_free(name_buffer);
+
+    MAX_NAME_LENGTH :: 32;
+
+    project_name := path_filename(project_root);
+    for c: project_name {
+        if name_buffer.count >= MAX_NAME_LENGTH break;
+
+        safe := c == #char "-" || c == #char "_" || c == #char "." ||
+                (c >= #char "a" && c <= #char "z") ||
+                (c >= #char "A" && c <= #char "Z") ||
+                (c >= #char "0" && c <= #char "9");
+        array_add(*name_buffer, ifx safe then c else #char "_");
+    }
+
+    if name_buffer.count == 0 array_add(*name_buffer, #char "_");
+
+    project_name_part := string.{ xx name_buffer.count, name_buffer.data };
+    project_hash := fnv1a_hash(project_root.data, xx project_root.count);
+
+    return sprint("%-%", project_name_part, project_hash);
+}
+
+create_diagnostics_metaprogram :: () -> bool, string {
     METAPROGRAM_SOURCE := #run -> string {
         project_dir := join(path_strip_filename(#file), "..");
         metaprogram_dir := tprint("%/metaprogram", project_dir);
         return read_entire_file(tprint("%/jails_diagnostics.jai", metaprogram_dir));
     };
 
-    jails_exe_dir := trim_right(path_strip_filename(get_path_of_running_executable()), "/");
-    metaprogram_dir := sprint("%/metaprogram", jails_exe_dir);
-    if !make_directory_if_it_does_not_exist(metaprogram_dir) {
-        log_error("Failed to create metaprogram directory!");
-        return;
+    if METAPROGRAM_SOURCE.count == 0 {
+        return false, "the bundled metaprogram source is empty";
+    }
+
+    if server.project_root.count == 0 {
+        return false, "the project root is unknown";
+    }
+
+    cache_directory := jails_cache_directory();
+    defer free(cache_directory);
+
+    metaprogram_dir := sprint("%/projects/%/metaprogram", cache_directory, metaprogram_cache_key(server.project_root));
+
+    if !make_directory_if_it_does_not_exist(metaprogram_dir, recursive=true) {
+        message := sprint("could not create the directory '%'", metaprogram_dir);
+        free(metaprogram_dir);
+        return false, message;
     }
 
     metaprogram_source_file_path := tprint("%/jails_diagnostics.jai", metaprogram_dir);
 
+    existing_source, has_existing_source := read_entire_file(metaprogram_source_file_path, log_errors=false);
+    if has_existing_source {
+        up_to_date := existing_source == METAPROGRAM_SOURCE;
+        free(existing_source);
+        if up_to_date {
+            server.diagnostics_metaprogram_path = metaprogram_dir;
+            log("Diagnostics metaprogram is up to date: %", metaprogram_source_file_path);
+            return true, "";
+        }
+    }
+
     if !write_entire_file(metaprogram_source_file_path, METAPROGRAM_SOURCE) {
-        log_error("Failed to create metaprogram file!");
-        return;
+        message := sprint("could not write '%'", metaprogram_source_file_path);
+        free(metaprogram_dir);
+        return false, message;
     }
 
     server.diagnostics_metaprogram_path = metaprogram_dir;
-    log("Metaprogram file created! (%)", metaprogram_source_file_path);
+    log("Diagnostics metaprogram written to %", metaprogram_source_file_path);
+    return true, "";
 }
 
 get_root_from_initialization :: (body: LSP_Request_Message_Initialize) -> (bool, string) {
@@ -388,8 +508,6 @@ handle_request :: (request: LSP_Request_Message, raw_request: string) {
                 return;
             }
 
-            create_diagnostics_metaprogram();
-
             // The order of precedence for establishing our project_root is:
             // - workspaceFolder (initially we only use the first path specified)
             // - rootUri
@@ -414,6 +532,10 @@ handle_request :: (request: LSP_Request_Message, raw_request: string) {
             }
 
             log("Project Root: %", server.project_root);
+
+            // Needs the project root: generated files are kept per project.
+            metaprogram_ok, metaprogram_error := create_diagnostics_metaprogram();
+
             load_config_file();
             validate_jai_path();
 
@@ -457,6 +579,11 @@ handle_request :: (request: LSP_Request_Message, raw_request: string) {
 
             to_send: LSP_Result_Initialize;
             lsp_respond(body.id, to_send);
+
+            if !metaprogram_ok {
+                log_error("Diagnostics are disabled: the metaprogram could not be set up: %", metaprogram_error);
+                lsp_window_message("Jails: diagnostics are unavailable because the metaprogram could not be written: %. Set JAILS_CACHE_DIR to a writable directory and reload the window.", metaprogram_error, message_type = LSP_Window_Show_Message_Type.ERROR);
+            }
 
             run_diagnostics();
 
@@ -650,6 +777,7 @@ main :: () {
 #import "String";
 #import "Shared_Memory_Channel";
 #import "Hash_Table";
+#import "Hash";
 #import "Random";
 #import "Process";
 #import "Reflection";
@@ -674,6 +802,7 @@ main :: () {
 
 #if OS == .WINDOWS {
     #import "Windows";
+    #import "Windows_Utf8";
 } else {
     #import "POSIX";
 }
