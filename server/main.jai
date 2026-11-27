@@ -158,6 +158,11 @@ find_jai_path :: (executable_name: string) -> string, string {
         result, raw_path, err = run_command("where.exe", executable_name, capture_and_return_output=true);
         path_overwrite_separators(raw_path, #char "/");
         raw_path = trim(raw_path);
+
+        // `where` prints every match on its own line, the first one wins.
+        newline := find_index_from_left(raw_path, #char "\n");
+        if newline >= 0 raw_path = slice(raw_path, 0, newline);
+        raw_path = trim_right(raw_path, "\r");
     } else {
         #if OS == .MACOS {
             result, raw_path, err = run_command("whereis", "-q", executable_name, capture_and_return_output=true);
@@ -191,17 +196,84 @@ find_jai_path :: (executable_name: string) -> string, string {
     }
 
     while contains(raw_path, "//") raw_path = replace(raw_path, "//", "/");
-    path := split(raw_path, "/");
 
-    if path.count < 2 {
-        log_error("Unexpected jai executable location '%', cannot derive the Jai path from it.", raw_path);
+    // The compiler found on PATH is often a launcher (e.g. a scoop shim), which lives in a different
+    // folder than the Jai installation it points to.
+    exe_path := resolve_executable_launcher(raw_path);
+    path_overwrite_separators(exe_path, #char "/");
+
+    root := jai_root_from_executable(exe_path);
+    if root.count == 0 {
+        log_error("Could not find a 'modules' folder next to the Jai compiler at '%'. Use '-jai_path' to point at the Jai installation.", exe_path);
         return "", "";
     }
 
-    pop(*path); // jai.exe or jai
-    pop(*path); // bin
+    return root, executable_name;
+}
 
-    return join(..path, separator="/"), executable_name;
+// Package managers (scoop) install a small launcher into a `shims` folder and record the real
+// executable in a `<name>.shim` file next to it.
+resolve_executable_launcher :: (exe_path: string) -> string {
+    #if OS != .WINDOWS {
+        return exe_path;
+    }
+
+    name := basename(exe_path);
+    if name.count == 0 return exe_path;
+
+    shim_path := join(trim_right(path_strip_filename(exe_path), "/"), tprint("%.shim", name), separator="/");
+    content, ok := read_entire_file(shim_path, log_errors=false);
+    if !ok return exe_path;
+    defer free(content);
+
+    target := parse_shim_target(content);
+    if target.count == 0 return exe_path;
+
+    return target;
+}
+
+parse_shim_target :: (content: string) -> string {
+    // Format: path = "C:\path\to\jai.exe"
+    quote_start := find_index_from_left(content, #char "\"");
+    if quote_start < 0 return "";
+
+    rest := slice(content, xx (quote_start + 1), xx (content.count - quote_start - 1));
+    quote_end := find_index_from_left(rest, #char "\"");
+    if quote_end < 0 return "";
+
+    return copy_string(slice(rest, 0, xx quote_end));
+}
+
+// Jai root is the folder that contains `modules`, usually the parent of the `bin` folder with the compiler.
+jai_root_from_executable :: (exe_path: string) -> string {
+    exe_dir := trim_right(path_strip_filename(exe_path), "/");
+    if exe_dir.count == 0 return "";
+
+    parent_dir := trim_right(path_strip_filename(exe_dir), "/");
+
+    candidates: []string = .[ exe_dir, parent_dir ];
+
+    for candidate: candidates {
+        if candidate.count == 0 continue;
+
+        is_dir, _ := is_directory(join(candidate, "modules", separator="/"));
+        if is_dir return candidate;
+    }
+
+    return "";
+}
+
+// Module imports can't be resolved without the Jai installation, tell the user instead of failing silently.
+validate_jai_path :: () {
+    if server.args.jai_path.count == 0 {
+        log_error("Jai installation was not found, symbols from imported modules won't resolve. Pass '-jai_path <jai root>' or set 'jai_path' in jails.json.");
+        return;
+    }
+
+    is_dir, _ := is_directory(join(server.args.jai_path, "modules", separator="/"));
+    if !is_dir {
+        log_error("'%' does not look like a Jai installation (no 'modules' folder), symbols from imported modules won't resolve. Check '-jai_path' or 'jai_path' in jails.json.", server.args.jai_path);
+    }
 }
 
 Config_File :: struct {
@@ -343,6 +415,7 @@ handle_request :: (request: LSP_Request_Message, raw_request: string) {
 
             log("Project Root: %", server.project_root);
             load_config_file();
+            validate_jai_path();
 
             if server.build_root.count == 0 {
                 server.build_root = find_entry_file(server.project_root);

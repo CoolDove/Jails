@@ -390,7 +390,15 @@ get_module_import_path :: (_import: *Directive_Import, current_path: string) -> 
     if _import.import_kind == {
         case .MODULE;
             path = get_module(_import.module);
-            if path.count == 0 return "";
+            if path.count == 0 {
+                // Only report imports of workspace code, the Jai installation modules reference platforms
+                // and modules that are not shipped with the compiler.
+                importing_jai_installation_module := server.args.jai_path.count > 0 && starts_with(_import.location.file, server.args.jai_path);
+                if !importing_jai_installation_module {
+                    log_error("Unable to find module '%' imported from '%'. Searched the local modules and '%/modules'.", _import.module, _import.location.file, server.args.jai_path);
+                }
+                return "";
+            }
         case .FILE;
             path = sprint("%/%", current_path, _import.module);
         case .DIR;
