@@ -371,6 +371,15 @@ get_root_from_initialization :: (body: LSP_Request_Message_Initialize) -> (bool,
     return false, "";
 }
 
+// Every request has to get an answer, otherwise the client waits for its timeout. Notifications must stay silent.
+report_unparsable_request :: (request: LSP_Request_Message, message: string) {
+    log_error("%", message);
+
+    if request.id.type == .NULL return;
+
+    lsp_respond_with_error(request.id, .INVALID_PARAMS, message, JSON_Value.{});
+}
+
 handle_request :: (request: LSP_Request_Message, raw_request: string) {
     // log("Got %", request.method);
 
@@ -383,8 +392,7 @@ handle_request :: (request: LSP_Request_Message, raw_request: string) {
 
             success, body := json_parse_string(raw_request, LSP_Request_Message_Initialize,, temp);
             if !success {
-                log_error("Unable to parse initialize message");
-                // @Incomplete: report error back!
+                report_unparsable_request(request, "Unable to parse initialize message");
                 return;
             }
 
@@ -409,6 +417,7 @@ handle_request :: (request: LSP_Request_Message, raw_request: string) {
                     server.project_root = normalize_and_copy_path(cwd);
                 } else {
                     log_error("Unable to fallback to the current working directory as the project root. Exiting.");
+                    lsp_respond_with_error(request.id, .INTERNAL_ERROR, "Unable to determine the project root.", JSON_Value.{});
                     return;
                 }
             }
@@ -463,7 +472,7 @@ handle_request :: (request: LSP_Request_Message, raw_request: string) {
         case "textDocument/definition";
             success, body := json_parse_string(raw_request, LSP_Request_Message_Definition,, temp);
             if !success {
-                log_error("Unable to parse textDocument/definition message");
+                report_unparsable_request(request, "Unable to parse textDocument/definition message");
                 return;
             }
 
@@ -472,7 +481,7 @@ handle_request :: (request: LSP_Request_Message, raw_request: string) {
         case "textDocument/didSave";
             success, body := json_parse_string(raw_request, LSP_Did_Save_Text_Document,, temp);
             if !success {
-                log_error("Unable to parse textDocument/divSave message");
+                report_unparsable_request(request, "Unable to parse textDocument/didSave message");
                 return;
             }
 
@@ -486,7 +495,7 @@ handle_request :: (request: LSP_Request_Message, raw_request: string) {
         case "textDocument/didOpen";
             success, body := json_parse_string(raw_request, LSP_Did_Open_Text_Document,, temp);
             if !success {
-                log_error("Unable to parse textDocument/didOpen message");
+                report_unparsable_request(request, "Unable to parse textDocument/didOpen message");
                 return;
             }
 
@@ -496,7 +505,9 @@ handle_request :: (request: LSP_Request_Message, raw_request: string) {
 
             create_memory_file(file_path, content);
 
-            parse_file(file_path);
+            // The file may already be in the AST (a root or an imported file) with the content from disk,
+            // so the buffer always has to be parsed again.
+            parse_file(file_path, true);
             analyze_files();
             // run_diagnostics();
 
@@ -505,7 +516,7 @@ handle_request :: (request: LSP_Request_Message, raw_request: string) {
         case "textDocument/didChange";
             success, body := json_parse_string(raw_request, LSP_Did_Change_Text_Document,, temp);
             if !success {
-                log_error("Unable to parse textDocument/didChange message");
+                report_unparsable_request(request, "Unable to parse textDocument/didChange message");
                 return;
             }
 
@@ -517,7 +528,7 @@ handle_request :: (request: LSP_Request_Message, raw_request: string) {
         case "textDocument/documentSymbol";
             success, body := json_parse_string(raw_request, LSP_Request_Message_Document_Symbol,, temp);
             if !success {
-                log_error("Unable to parse textDocument/documentSymbol message");
+                report_unparsable_request(request, "Unable to parse textDocument/documentSymbol message");
                 return;
             }
 
@@ -528,7 +539,7 @@ handle_request :: (request: LSP_Request_Message, raw_request: string) {
         case "workspace/symbol";
             success, body := json_parse_string(raw_request, LSP_Request_Message_Workspace_Symbol,, temp);
             if !success {
-                log_error("Unable to parse workspace/symbol message");
+                report_unparsable_request(request, "Unable to parse workspace/symbol message");
                 return;
             }
 
@@ -539,17 +550,21 @@ handle_request :: (request: LSP_Request_Message, raw_request: string) {
         case "textDocument/didClose";
             success, body := json_parse_string(raw_request, LSP_Did_Close_Text_Document,, temp);
             if !success {
-                log_error("Unable to parse textDocument/dicClose message");
+                report_unparsable_request(request, "Unable to parse textDocument/didClose message");
                 return;
             }
 
             file_path := normalize_path(body.params.textDocument.uri,, temp);
             remove_memory_file(file_path);
 
+            // Navigation must reflect the file on disk again, not the buffer that was just closed.
+            parse_file(file_path, true);
+            analyze_files();
+
         case "textDocument/completion";
             success, body := json_parse_string(raw_request, LSP_Request_Message_Completion,, temp);
             if !success {
-                log_error("Unable to parse textDocument/completion message");
+                report_unparsable_request(request, "Unable to parse textDocument/completion message");
                 return;
             }
 
@@ -558,7 +573,7 @@ handle_request :: (request: LSP_Request_Message, raw_request: string) {
         case "textDocument/signatureHelp";
             success, body := json_parse_string(raw_request, LSP_Request_Message_Signature_Help,, temp);
             if !success {
-                log_error("Unable to parse textDocument/completion message");
+                report_unparsable_request(request, "Unable to parse textDocument/signatureHelp message");
                 return;
             }
 
@@ -567,11 +582,21 @@ handle_request :: (request: LSP_Request_Message, raw_request: string) {
         case "textDocument/hover";
             success, body := json_parse_string(raw_request, LSP_Request_Message_Hover,, temp);
             if !success {
-                log_error("Unable to parse textDocument/hover message");
+                report_unparsable_request(request, "Unable to parse textDocument/hover message");
                 return;
             }
 
             handle_hover(body);
+
+        case;
+            // Clients expect an answer for requests, even for methods we do not implement.
+            if request.id.type != .NULL {
+                message := tprint("Unsupported method '%'", request.method);
+                log_error("%", message);
+                lsp_respond_with_error(request.id, .METHOD_NOT_FOUND, message, JSON_Value.{});
+            } else {
+                log("Ignoring unsupported notification '%'", request.method);
+            }
     }
 }
 
@@ -626,6 +651,8 @@ main :: () {
         parseOK, request := json_parse_string(body, LSP_Request_Message,, temp);
         if !parseOK {
             log_error("Unable to parse as json:\n%\n\n", body);
+            // The id is unknown, JSON-RPC uses null for errors that can not be tied to a request.
+            lsp_respond_with_error(JSON_Value.{}, .PARSE_ERROR, "Unable to parse the message as JSON.", JSON_Value.{});
             continue;
         }
 
