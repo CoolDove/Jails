@@ -15,15 +15,18 @@ handle_goto_load :: (request: LSP_Request_Message_Definition, file: *Program_Fil
 handle_goto_import :: (request: LSP_Request_Message_Definition, file: *Program_File, _import: *Directive_Import) {
     push_allocator(temp);
 
-    file_path_without_filename := trim_right(path_strip_filename(file.path), "/");
-    module_absolute_path := get_module_import_path(_import, file_path_without_filename);
+    module_file := get_module_file(_import);
+    if !module_file {
+        lsp_respond(request.id, null);
+        return;
+    }
 
     lsp_location: LSP_Location_Link;
     lsp_location.originSelectionRange = .{
         start=.{line=xx _import.location.l0, character=xx(_import.location.c1 - _import.module.count-1)},
         end=.{line=xx _import.location.l0, character=xx(_import.location.c1-1)}
     };
-    lsp_location.targetUri = path_to_lsp_path(module_absolute_path);
+    lsp_location.targetUri = path_to_lsp_path(module_file.path);
 
     lsp_respond(request.id, lsp_location);
 }

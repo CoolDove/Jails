@@ -390,7 +390,15 @@ get_module_import_path :: (_import: *Directive_Import, current_path: string) -> 
     if _import.import_kind == {
         case .MODULE;
             path = get_module(_import.module);
-            if path.count == 0 return "";
+            if path.count == 0 {
+                // Only report imports of workspace code, the Jai installation modules reference platforms
+                // and modules that are not shipped with the compiler.
+                importing_jai_installation_module := server.args.jai_path.count > 0 && starts_with(_import.location.file, server.args.jai_path);
+                if !importing_jai_installation_module {
+                    log_error("Unable to find module '%' imported from '%'. Searched the local modules and '%/modules'.", _import.module, _import.location.file, server.args.jai_path);
+                }
+                return "";
+            }
         case .FILE;
             path = sprint("%/%", current_path, _import.module);
         case .DIR;
@@ -403,6 +411,15 @@ get_module_import_path :: (_import: *Directive_Import, current_path: string) -> 
     }
 
     return path;
+}
+
+// get_module_import_path returns an unnormalized path, so it can't be used as a key in server.files directly.
+get_module_file :: (_import: *Directive_Import) -> *Program_File {
+    current_dir := trim_right(path_strip_filename(_import.location.file), "/");
+    raw_path := get_module_import_path(_import, current_dir);
+    if raw_path.count == 0 return null;
+
+    return get_file(normalize_path(raw_path));
 }
 
 // resolve_identifiers :: (file: *Program_File) {
@@ -708,45 +725,81 @@ get_declarations_from_parent :: (decls: *[..]*Declaration, node: *Node, from_loc
 
             if !from_loc return;
 
-            for block.members {
-
-                // We only accept `nodes` if they were declared before our cursor/node location.
-                if from_loc.l0 < it.location.l0 continue;
-
-                if it.kind == {
-                    case .USING; // @TODO: solve crash when having two using
-                        add_decls_from_using(decls, cast(*Using) it, name);
-
-                    case .COMPOUND_DECLARATION;
-                        comp_decl := cast(*Compound_Declaration) it;
-                        if only_consts && !comp_decl.const {
-                            continue;
-                        }
-
-                        compound_declaration_to_declarations(decls, comp_decl, name);
-
-                    case .DECLARATION;
-                        decl := cast(*Declaration) it;
-
-                        add_decl := true;
-
-                        if only_consts && !decl.const {
-                            add_decl = false;
-                        }
-
-                        if name && name != decl.name {
-                            add_decl = false;
-                        }
-
-                        if add_decl array_add(decls, decl);
-                }
-
-            }
+            add_block_declarations(decls, block, from_loc, name, only_consts);
 
         case .FOR; get_declarations_from_for(decls, node, from_loc, name);
     }
 
     get_declarations_from_parent(decls, node.parent, from_loc, name, only_consts);
+}
+
+add_block_declarations :: (decls: *[..]*Declaration, block: *Block, from_loc: *Node.Location, name: string, only_consts: bool) {
+    for block.members {
+
+        // We only accept `nodes` if they were declared before our cursor/node location.
+        if from_loc.l0 < it.location.l0 continue;
+
+        if it.kind == {
+            case .USING; // @TODO: solve crash when having two using
+                add_decls_from_using(decls, cast(*Using) it, name);
+
+            case .COMPOUND_DECLARATION;
+                comp_decl := cast(*Compound_Declaration) it;
+                if only_consts && !comp_decl.const {
+                    continue;
+                }
+
+                compound_declaration_to_declarations(decls, comp_decl, name);
+
+            case .DECLARATION;
+                decl := cast(*Declaration) it;
+
+                add_decl := true;
+
+                if only_consts && !decl.const {
+                    add_decl = false;
+                }
+
+                if name && name != decl.name {
+                    add_decl = false;
+                }
+
+                if add_decl array_add(decls, decl);
+
+            case .IF;
+                // Compile-time `#if` branches do not introduce a scope, so their declarations belong
+                // to the enclosing block. The branch we are inside of is already scanned by the
+                // regular parent walk.
+                _if := cast(*If) it;
+                if !_if.compile_time continue;
+                if contains(it.location, from_loc) continue;
+
+                add_compile_time_if_declarations(decls, _if, from_loc, name, only_consts);
+        }
+
+    }
+}
+
+add_compile_time_if_declarations :: (decls: *[..]*Declaration, _if: *If, from_loc: *Node.Location, name: string, only_consts: bool) {
+    add_compile_time_branch_declarations(decls, _if._then, from_loc, name, only_consts);
+    add_compile_time_branch_declarations(decls, _if._else, from_loc, name, only_consts);
+}
+
+// Handles both `#if ... { ... }` blocks and `#else #if ...` chains.
+add_compile_time_branch_declarations :: (decls: *[..]*Declaration, node: *Node, from_loc: *Node.Location, name: string, only_consts: bool) {
+    if !node return;
+
+    if node.kind == .BLOCK {
+        add_block_declarations(decls, cast(*Block) node, from_loc, name, only_consts);
+        return;
+    }
+
+    if node.kind == .IF {
+        _if := cast(*If) node;
+        if !_if.compile_time return;
+
+        add_compile_time_if_declarations(decls, _if, from_loc, name, only_consts);
+    }
 }
 
 get_declarations :: (file: *Program_File, from_node: *Node = null, from_loc: *Node.Location = null, name := "", only_loaded := false) -> []*Declaration {
@@ -1352,16 +1405,22 @@ get_members_in :: (parent: *Node, ident: *Identifier) -> []*Declaration {
     decls: [..]*Declaration;
 
     if parent.kind == .DIRECTIVE_IMPORT {
-        import := cast(*Directive_Import) parent;
-
-        module_file_path := get_module_import_path(import, parent.location.file);
-        module_file := get_file(module_file_path);
-
+        module_file := get_module_file(cast(*Directive_Import) parent);
         if !module_file {
             return decls;
         }
 
-        return get_declarations(module_file, only_loaded=true, name=ident.name);
+        module_decls := get_declarations(module_file, only_loaded=true, name=ident.name);
+        if module_decls.count > 0 {
+            return module_decls;
+        }
+
+        // A module that was never analyzed has no linked files, fall back to its own declarations.
+        for decl: table_find_multiple(*module_file.declarations, ident.name) {
+            array_add(*decls, decl);
+        }
+
+        return decls;
     }
 
     // Special case for array
