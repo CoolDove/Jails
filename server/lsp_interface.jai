@@ -65,15 +65,6 @@ LSP_Progress_Params :: struct (Value_Type: Type) {
     value: Value_Type;
 }
 
-LSP_Hover_Params :: struct {
-    textDocument: string;
-    position: LSP_Position;
-}
-
-LSP_Hover_Result :: struct {
-    value: string;
-}
-
 LSP_Regular_Expressions_Client_Capabilites :: struct {
     engine: string;
     version: *string;
@@ -497,7 +488,7 @@ LSP_Result_Initialize :: struct {
         workspaceSymbolProvider := true;
 
         definitionProvider := true;
-        // hoverProvider := true;
+        hoverProvider := true;
 
         signatureHelpProvider: struct {
             triggerCharacters   := string.["("];
@@ -631,9 +622,13 @@ LSP_Completion_Item :: struct {
     };
 }
 
+LSP_Hover_Markup_Content :: struct {
+    kind: string;
+    value: string;
+}
+
 LSP_Hover :: struct {
-    contents: string;
-    contentFormat:= "markdown";
+    contents: LSP_Hover_Markup_Content;
 }
 
 LSP_Folding_Range_Client_Capabilities :: struct {
