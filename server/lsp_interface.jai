@@ -25,7 +25,8 @@ LSP_Request_Message :: struct {
 }
 
 LSP_Response_Error :: struct (Data_Type: Type) {
-    code: LSP_Error_Codes;
+    // JSON-RPC requires a numeric code, an enum would be serialized by its member name.
+    code: s32;
     message: string;
     data: Data_Type;
 }
@@ -807,6 +808,6 @@ lsp_respond_with_error :: (id: JSON_Value, code: LSP_Error_Codes, message: strin
     };
 
     reply.id = id;
-    reply.error = .{code, message, data};
+    reply.error = .{cast(s32) code, message, data};
     lsp_send(reply);
 }

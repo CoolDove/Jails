@@ -9,7 +9,15 @@ handle_goto_load :: (request: LSP_Request_Message_Definition, file: *Program_Fil
     };
     lsp_location.targetUri = path_to_lsp_path(load_absolute_path);
 
-    lsp_respond(request.id, lsp_location);
+    // There is no declaration to select, the client should go to the start of the loaded file.
+    file_start: LSP_Range;
+    lsp_location.targetRange = file_start;
+    lsp_location.targetSelectionRange = file_start;
+
+    // Definition results have to be an array of locations, a single LocationLink is not a valid reply.
+    locations := NewArray(1, LSP_Location_Link);
+    locations[0] = lsp_location;
+    lsp_respond(request.id, locations);
 }
 
 handle_goto_import :: (request: LSP_Request_Message_Definition, file: *Program_File, _import: *Directive_Import) {
@@ -28,7 +36,15 @@ handle_goto_import :: (request: LSP_Request_Message_Definition, file: *Program_F
     };
     lsp_location.targetUri = path_to_lsp_path(module_file.path);
 
-    lsp_respond(request.id, lsp_location);
+    // There is no declaration to select, the client should go to the start of the module file.
+    file_start: LSP_Range;
+    lsp_location.targetRange = file_start;
+    lsp_location.targetSelectionRange = file_start;
+
+    // Definition results have to be an array of locations, a single LocationLink is not a valid reply.
+    locations := NewArray(1, LSP_Location_Link);
+    locations[0] = lsp_location;
+    lsp_respond(request.id, locations);
 }
 
 handle_goto_dot :: (request: LSP_Request_Message_Definition, ident: *Identifier) -> bool {

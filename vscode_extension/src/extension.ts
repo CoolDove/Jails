@@ -22,7 +22,7 @@ export function activate(context: ExtensionContext) {
 
     if (!fs.existsSync(devServerPath)) {
         window.showErrorMessage(`Jails on ${process.platform}-${process.arch} is not yet supported. But you can build Jails yourself https://github.com/SogoCZE/Jails?tab=readme-ov-file#vs-code.`);
-        process.exit();
+        return;
     }
 
     const serverOptions: ServerOptions = {
