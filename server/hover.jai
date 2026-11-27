@@ -35,7 +35,7 @@ handle_hover :: (request: LSP_Request_Message_Hover) {
 
     hover: LSP_Hover;
     hover.contents.kind = "markdown";
-    hover.contents.value = hover_build_content(decl);
+    hover.contents.value = hover_build_content(decl, file_path);
 
     lsp_respond(request.id, hover);
 }
@@ -294,7 +294,7 @@ hover_procedure_declaration :: (ident: *Identifier, proc_call: *Procedure_Call) 
     return procedure_decls[best];
 }
 
-hover_build_content :: (decl: *Declaration) -> string {
+hover_build_content :: (decl: *Declaration, current_file_path: string) -> string {
     builder: String_Builder;
 
     append(*builder, "```jai\n");
@@ -316,7 +316,86 @@ hover_build_content :: (decl: *Declaration) -> string {
         }
     }
 
+    module_name := hover_module_name(decl, current_file_path);
+    if module_name.count > 0 {
+        append(*builder, "\n\n*from module `");
+        append(*builder, module_name);
+        append(*builder, "`*");
+    }
+
     return builder_to_string(*builder);
+}
+
+// Name of the module a declaration comes from, empty when it lives in the module that is being edited.
+hover_module_name :: (decl: *Declaration, current_file_path: string) -> string {
+    decl_module := get_module_name_for_file(decl.location.file);
+    if decl_module == get_module_name_for_file(current_file_path) {
+        return "";
+    }
+
+    // Files outside of any module belong to the workspace program.
+    if decl_module.count == 0 {
+        return "workspace";
+    }
+
+    return decl_module;
+}
+
+// Name of the module a file belongs to: `<module roots>/Name/...` or `<module roots>/Name.jai`.
+// Empty for files that are not part of any module.
+get_module_name_for_file :: (path: string) -> string {
+    module_roots: [..]string;
+    defer array_free(module_roots);
+
+    for local_modules_folder: server.local_modules {
+        root: string;
+        if is_absolute_path(local_modules_folder) {
+            root = local_modules_folder;
+        } else {
+            if server.project_root.count == 0 continue;
+            root = join(server.project_root, local_modules_folder, separator="/");
+        }
+
+        array_add(*module_roots, trim_right(normalize_path(root), "/"));
+    }
+
+    if server.args.jai_path.count > 0 {
+        array_add(*module_roots, trim_right(normalize_path(join(server.args.jai_path, "modules", separator="/")), "/"));
+    }
+
+    for root: module_roots {
+        if root.count == 0 continue;
+
+        prefix := tprint("%/", root);
+        if !path_starts_with(path, prefix) continue;
+
+        rest := slice(path, prefix.count, path.count - prefix.count);
+
+        separator_index := find_index_from_left(rest, #char "/");
+        if separator_index >= 0 {
+            return slice(rest, 0, separator_index);
+        }
+
+        return path_strip_extension(rest);
+    }
+
+    return "";
+}
+
+path_starts_with :: (path: string, prefix: string) -> bool {
+    if path.count < prefix.count return false;
+
+    #if OS == .WINDOWS {
+        // Paths on Windows come from different sources (the compiler lookup, the editor, the config file)
+        // and their casing is not guaranteed to match.
+        for 0..prefix.count-1 {
+            if to_lower(path[it]) != to_lower(prefix[it]) return false;
+        }
+
+        return true;
+    } else {
+        return begins_with(path, prefix);
+    }
 }
 
 hover_print_declaration :: (builder: *String_Builder, decl: *Declaration) {

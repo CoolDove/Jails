@@ -3,7 +3,7 @@ Jails is an experimental language server for the Jai programming language.
 
 ## Features
 - Basic Go-To Definition
-- Hover with a declaration preview and the comment above the declaration
+- Hover with a declaration preview, the comment above the declaration and the module it comes from
 - Autocomplete for available symbols (types, procedures etc)
 - Signature help for procedure calls
 - Error reporting from the compiler
