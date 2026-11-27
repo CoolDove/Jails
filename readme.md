@@ -52,6 +52,15 @@ Jails for VS Code can be downloaded from [VS Code Marketplace](https://marketpla
 7. Run `npm run pack:<platform>` (mac, linux, windows) to pack the bundle into a file called something like `jails-x.x.x.vsix`.
 8. Run `code --install-extension jails-x.x.x.vsix` to install the extension in VS Code.
 
+### Generated files
+Jails writes the metaprogram it uses for compiler diagnostics into your user cache directory, one folder per project, never next to the language server binary:
+
+- Windows: `%LOCALAPPDATA%\jails\projects\<project>-<hash>\metaprogram`
+- macOS: `~/Library/Caches/jails/projects/...`
+- Linux and others: `$XDG_CACHE_HOME/jails` (or `~/.cache/jails`)
+
+Set the `JAILS_CACHE_DIR` environment variable to put these files somewhere else. If the folder cannot be written, Jails reports an error in the editor and disables diagnostics for that session.
+
 ### Config file
 You can create a config file `jails.json` inside your project root to specify:
 - `roots` (`main.jai`, `build.jai`) - this is used to set up files that are being parsed on init - you don't need to set this but it will improve your experience.

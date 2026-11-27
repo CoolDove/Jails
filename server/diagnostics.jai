@@ -103,6 +103,8 @@ reset_diagnostics :: () {
 // @todo: add support for warnings
 run_diagnostics_now :: () {
     if server.build_root.count == 0 return;
+    // Diagnostics need the generated metaprogram; setup failed (and was reported to the user).
+    if server.diagnostics_metaprogram_path.count == 0 return;
     build_root_absolute := join(server.project_root, server.build_root, separator="/");
     defer free(build_root_absolute);
 
